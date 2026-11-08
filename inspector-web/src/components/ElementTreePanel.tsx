@@ -1,0 +1,139 @@
+import { useMemo, useState } from "react";
+import type { ElementTreeDTO, UIElement } from "../types";
+
+interface Props {
+  tree: ElementTreeDTO | null;
+  selectedId: string | null;
+  hoveredId: string | null;
+  onSelect: (id: string) => void;
+  onHover: (id: string | null) => void;
+}
+
+function label(element: UIElement): string {
+  const cls = element.class_name?.split(".").pop() ?? "Node";
+  const bits = [cls];
+  if (element.text) bits.push(`"${element.text}"`);
+  else if (element.content_description) bits.push(`desc:"${element.content_description}"`);
+  else if (element.resource_id) bits.push(`#${element.resource_id.split("/").pop()}`);
+  return bits.join(" ");
+}
+
+function serializeNode(element: UIElement, byId: Map<string, UIElement>, depth: number): string {
+  const indent = "  ".repeat(depth);
+  const line = `${indent}[${element.role ?? "?"}] ${label(element)}`;
+  const children = element.children.map((id) => byId.get(id)).filter((e): e is UIElement => !!e);
+  return [line, ...children.map((c) => serializeNode(c, byId, depth + 1))].join("\n");
+}
+
+export function ElementTreePanel({ tree, selectedId, hoveredId, onSelect, onHover }: Props) {
+  const [query, setQuery] = useState("");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [copied, setCopied] = useState(false);
+
+  const byId = useMemo(() => new Map((tree?.elements ?? []).map((e) => [e.id, e])), [tree]);
+  const roots = useMemo(() => (tree?.elements ?? []).filter((e) => e.parent_id === null), [tree]);
+  const allIds = useMemo(() => (tree?.elements ?? []).map((e) => e.id), [tree]);
+
+  const matchesQuery = (e: UIElement): boolean => {
+    if (!query.trim()) return true;
+    const q = query.toLowerCase();
+    return (
+      (e.text ?? "").toLowerCase().includes(q) ||
+      (e.resource_id ?? "").toLowerCase().includes(q) ||
+      (e.class_name ?? "").toLowerCase().includes(q) ||
+      (e.content_description ?? "").toLowerCase().includes(q)
+    );
+  };
+
+  const anyDescendantMatches = (e: UIElement): boolean => {
+    if (matchesQuery(e)) return true;
+    return e.children.some((cid) => {
+      const child = byId.get(cid);
+      return child ? anyDescendantMatches(child) : false;
+    });
+  };
+
+  function toggleCollapsed(id: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function copyTree() {
+    const text = roots.map((r) => serializeNode(r, byId, 0)).join("\n");
+    navigator.clipboard?.writeText(text).catch(() => undefined);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  }
+
+  function renderNode(element: UIElement): React.ReactNode {
+    if (query.trim() && !anyDescendantMatches(element)) return null;
+    const children = element.children.map((id) => byId.get(id)).filter((e): e is UIElement => !!e);
+    const isSelected = element.id === selectedId;
+    const isHovered = element.id === hoveredId;
+    const hasChildren = children.length > 0;
+    const isExpanded = !collapsed.has(element.id) || (query.trim() !== "" && hasChildren);
+
+    return (
+      <div key={element.id} style={{ marginLeft: 12 }}>
+        <div
+          className={`tree-node${isSelected ? " tree-node-selected" : ""}${isHovered ? " tree-node-hovered" : ""}`}
+          onClick={(evt) => {
+            evt.stopPropagation();
+            onSelect(element.id);
+          }}
+          onMouseEnter={() => onHover(element.id)}
+          onMouseLeave={() => onHover(null)}
+        >
+          {hasChildren ? (
+            <span
+              className="tree-toggle"
+              onClick={(evt) => {
+                evt.stopPropagation();
+                toggleCollapsed(element.id);
+              }}
+            >
+              {isExpanded ? "▾" : "▸"}
+            </span>
+          ) : (
+            <span className="tree-toggle-spacer" />
+          )}
+          <span className={`role-badge role-${element.role ?? "container"}`}>{element.role ?? "?"}</span>
+          <span className="tree-node-label">{label(element)}</span>
+        </div>
+        {hasChildren && isExpanded && children.map(renderNode)}
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel tree-panel">
+      <div className="panel-header">
+        Device Tree
+        <div className="tree-panel-actions">
+          <button className="tree-action-btn" onClick={() => setCollapsed(new Set())}>
+            Expand all
+          </button>
+          <button className="tree-action-btn" onClick={() => setCollapsed(new Set(allIds))}>
+            Collapse all
+          </button>
+          <button className="tree-action-btn" onClick={copyTree} disabled={!tree}>
+            {copied ? "Copied!" : "Copy tree"}
+          </button>
+        </div>
+      </div>
+      <input
+        className="search-input"
+        placeholder="Search elements..."
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      <div className="tree-scroll">
+        {tree ? roots.map(renderNode) : <div className="empty-state">No hierarchy loaded</div>}
+      </div>
+    </div>
+  );
+}
